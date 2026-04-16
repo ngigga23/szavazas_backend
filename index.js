@@ -1,3 +1,5 @@
+require('dotenv').config()
+
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
@@ -9,11 +11,12 @@ const path = require('path');
 const fs = require('fs/promises');
 
 const app = express();
-const PORT = 3000;
-const JWT_SECRET = 'autobolt_titkos_kulcs_2024';
+const PORT = process.env.PORT;
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN
 
 // Middleware
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: '*', credentials: true }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -23,16 +26,25 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Adatbázis kapcsolat
 const db = mysql.createPool({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'autobolt',
+    host: process.env.HOST,
+    port: process.env.DB_PORT,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 });
 
 console.log('MySQL pool létrehozva!');
+
+
+const COOKIE_OPTS={
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+
+}
 
 // ─── MULTER BEÁLLÍTÁS (szavazás projektből átvéve) ────────────────────────────
 const storage = multer.diskStorage({
@@ -143,7 +155,7 @@ app.post('/api/users/login', (req, res) => {
         try {
             const match = await bcrypt.compare(password, user.jelszo);
             if (!match) return res.status(401).json({ success: false, message: 'Hibás email vagy jelszó!' });
-            const token = jwt.sign({ id: user.id, email: user.email, felhasznalonev: user.felhasznalonev, admin: user.admin }, JWT_SECRET, { expiresIn: '24h' });
+            const token = jwt.sign({ id: user.id, email: user.email, felhasznalonev: user.felhasznalonev, admin: user.admin }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
             res.json({ success: true, message: 'Sikeres bejelentkezés!', token, user: { id: user.id, felhasznalonev: user.felhasznalonev, email: user.email, admin: user.admin } });
         } catch (e) {
             res.status(500).json({ success: false, message: 'Szerver hiba!' });
