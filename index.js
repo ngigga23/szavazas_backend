@@ -1,3 +1,8 @@
+// Ezt az első projektben már működő server.js-be kell integrálni
+
+// ─── FONTOSABB MÓDOSÍTÁSOK ─────────────────────────────────────────────────
+
+// 1. TOP-on ADD meg ezeket:
 require('dotenv').config()
 
 const express = require('express');
@@ -9,22 +14,32 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs/promises');
+const cookieParser = require('cookie-parser');  // ✅ ÚJ
 
 const app = express();
 const PORT = process.env.PORT;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN
 
-// Middleware
+// ✅ ÚJ: Cookie beállítás
+const COOKIE_NAME = 'auth_token';
+const COOKIE_OPTS = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',  // prod-ban true
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000  // 7 nap
+};
+
+// --- Middleware ---
 app.use(cors({ origin: '*', credentials: true }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// Statikus mappa - képek kiszolgálása (mint a szavazás projektben)
+app.use(cookieParser());  // ✅ ÚJ - cookie parser middleware
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Adatbázis kapcsolat
+// --- Adatbázis ---
 const db = mysql.createPool({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT,
@@ -38,9 +53,7 @@ const db = mysql.createPool({
 
 console.log('MySQL pool létrehozva!');
 
-
-
-// ─── MULTER BEÁLLÍTÁS (szavazás projektből átvéve) ────────────────────────────
+// ─── MULTER ────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
     destination: './uploads/',
     filename: (req, file, cb) => {
@@ -49,12 +62,19 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-
-// ─── JWT MIDDLEWARE ───────────────────────────────────────────────────────────
+// ─── JWT MIDDLEWARE - MÓDOSÍTOTT ───────────────────────────────────────────
 function verifyToken(req, res, next) {
+    // 1. Próbálja az Authorization header-ből
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    let token = authHeader && authHeader.split(' ')[1];
+    
+    // 2. Ha nincs, próbálja a cookie-ból
+    if (!token && req.cookies && req.cookies[COOKIE_NAME]) {
+        token = req.cookies[COOKIE_NAME];
+    }
+    
     if (!token) return res.status(401).json({ success: false, message: 'Token szükséges!' });
+    
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) return res.status(403).json({ success: false, message: 'Érvénytelen token!' });
         req.user = decoded;
@@ -67,14 +87,10 @@ function verifyAdmin(req, res, next) {
     next();
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 //  KÉP VÉGPONTOK
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// POST /api/upload  – Egy kép feltöltése (szavazás projektből átvett logika)
-// FormData: { kep } (file)
-// Visszaad egy URL-t amit az autóhoz lehet menteni
 app.post('/api/upload', upload.single('kep'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: 'Nincs feltöltött fájl!' });
@@ -83,7 +99,6 @@ app.post('/api/upload', upload.single('kep'), (req, res) => {
     res.json({ success: true, url: imageUrl, filename: req.file.filename });
 });
 
-// GET /api/images  – Összes feltöltött kép listázása (szavazás: kepekLekerese logika)
 app.get('/api/images', async (req, res) => {
     try {
         const uploadsDir = path.join(__dirname, 'uploads');
@@ -100,7 +115,6 @@ app.get('/api/images', async (req, res) => {
     }
 });
 
-// DELETE /api/upload/:filename  – Kép törlése a szerverről
 app.delete('/api/upload/:filename', async (req, res) => {
     try {
         const filePath = path.join(__dirname, 'uploads', req.params.filename);
@@ -111,12 +125,10 @@ app.delete('/api/upload/:filename', async (req, res) => {
     }
 });
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 //  FELHASZNÁLÓ VÉGPONTOK
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// POST /api/users/register
 app.post('/api/users/register', async (req, res) => {
     const { nev, email, password } = req.body;
     if (!nev || !email || !password) return res.status(400).json({ success: false, message: 'Név, email és jelszó megadása kötelező!' });
@@ -137,7 +149,7 @@ app.post('/api/users/register', async (req, res) => {
     });
 });
 
-// POST /api/users/login
+// ✅ MÓDOSÍTOTT: Login - httpOnly cookie-t ír
 app.post('/api/users/login', (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email és jelszó megadása kötelező!' });
@@ -150,14 +162,32 @@ app.post('/api/users/login', (req, res) => {
             const match = await bcrypt.compare(password, user.jelszo);
             if (!match) return res.status(401).json({ success: false, message: 'Hibás email vagy jelszó!' });
             const token = jwt.sign({ id: user.id, email: user.email, felhasznalonev: user.felhasznalonev, admin: user.admin }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-            res.json({ success: true, message: 'Sikeres bejelentkezés!', token, user: { id: user.id, felhasznalonev: user.felhasznalonev, email: user.email, admin: user.admin } });
+            
+            // ✅ httpOnly cookie-ba menti a tokent
+            res.cookie(COOKIE_NAME, token, COOKIE_OPTS);
+            
+            res.json({ 
+                success: true, 
+                message: 'Sikeres bejelentkezés!', 
+                user: { 
+                    id: user.id, 
+                    felhasznalonev: user.felhasznalonev, 
+                    email: user.email, 
+                    admin: user.admin 
+                } 
+            });
         } catch (e) {
             res.status(500).json({ success: false, message: 'Szerver hiba!' });
         }
     });
 });
 
-// GET /api/me
+// ✅ ÚJ: Logout endpoint
+app.post('/api/users/logout', verifyToken, (req, res) => {
+    res.clearCookie(COOKIE_NAME, { path: '/' });
+    res.status(200).json({ success: true, message: 'Sikeres kijelentkezés!' });
+});
+
 app.get('/api/me', verifyToken, (req, res) => {
     db.query('SELECT id, felhasznalonev, email, admin FROM felhasznalok WHERE id = ?', [req.user.id], (err, results) => {
         if (err) return res.status(500).json({ success: false, message: 'Adatbázis hiba!' });
@@ -166,7 +196,6 @@ app.get('/api/me', verifyToken, (req, res) => {
     });
 });
 
-// GET /api/users
 app.get('/api/users', verifyToken, verifyAdmin, (req, res) => {
     db.query('SELECT id, felhasznalonev, email, admin FROM felhasznalok', (err, results) => {
         if (err) return res.status(500).json({ success: false, message: 'Adatbázis hiba!', error: err });
@@ -174,18 +203,16 @@ app.get('/api/users', verifyToken, verifyAdmin, (req, res) => {
     });
 });
 
-// GET /api/users/:id
 app.get('/api/users/:id', verifyToken, (req, res) => {
     const targetId = parseInt(req.params.id);
     if (req.user.id !== targetId && !req.user.admin) return res.status(403).json({ success: false, message: 'Nincs jogosultságod!' });
     db.query('SELECT id, felhasznalonev, email, admin FROM felhasznalok WHERE id = ?', [targetId], (err, results) => {
-        if (err) return res.status(500).json({ success: false, message: 'Adatbázis hiba!', error: err });
+        if (err) return res.status(500).json({ success: false, message: 'Adatbázis hiba!' });
         if (results.length === 0) return res.status(404).json({ success: false, message: 'Felhasználó nem található!' });
         res.json({ success: true, user: results[0] });
     });
 });
 
-// PUT /api/users/:id
 app.put('/api/users/:id', verifyToken, async (req, res) => {
     const targetId = parseInt(req.params.id);
     if (req.user.id !== targetId && !req.user.admin) return res.status(403).json({ success: false, message: 'Nincs jogosultságod!' });
@@ -206,7 +233,6 @@ app.put('/api/users/:id', verifyToken, async (req, res) => {
     });
 });
 
-// DELETE /api/users/:id
 app.delete('/api/users/:id', verifyToken, verifyAdmin, (req, res) => {
     db.query('DELETE FROM felhasznalok WHERE id = ?', [req.params.id], (err, result) => {
         if (err) return res.status(500).json({ success: false, message: 'Adatbázis hiba!', error: err });
@@ -214,7 +240,6 @@ app.delete('/api/users/:id', verifyToken, verifyAdmin, (req, res) => {
         res.json({ success: true, message: 'Felhasználó törölve!' });
     });
 });
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  AUTÓ VÉGPONTOK
@@ -235,7 +260,7 @@ app.get('/api/cars/:id', (req, res) => {
     });
 });
 
-app.post('/api/cars', (req, res) => {
+app.post('/api/cars', verifyToken, verifyAdmin, (req, res) => {
     const { make, subtitle, price, year, km, fuel, gearbox, status, description, img, csomagter, tomeg, hajtas, teljesitmeny } = req.body;
     const sql = `INSERT INTO autok (make, subtitle, price, year, km, fuel, gearbox, status, description, img, csomagter, tomeg, hajtas, teljesitmeny) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     db.query(sql, [make, subtitle, price, year, km, fuel, gearbox, status, description, img, csomagter, tomeg, hajtas, teljesitmeny], (err) => {
@@ -244,7 +269,7 @@ app.post('/api/cars', (req, res) => {
     });
 });
 
-app.put('/api/cars/:id', (req, res) => {
+app.put('/api/cars/:id', verifyToken, verifyAdmin, (req, res) => {
     const { make, subtitle, price, year, km, fuel, gearbox, status, description, img, csomagter, tomeg, hajtas, teljesitmeny } = req.body;
     const sql = `UPDATE autok SET make=?, subtitle=?, price=?, year=?, km=?, fuel=?, gearbox=?, status=?, description=?, img=?, csomagter=?, tomeg=?, hajtas=?, teljesitmeny=? WHERE id=?`;
     db.query(sql, [make, subtitle, price, year, km, fuel, gearbox, status, description, img, csomagter, tomeg, hajtas, teljesitmeny, req.params.id], (err) => {
@@ -253,13 +278,12 @@ app.put('/api/cars/:id', (req, res) => {
     });
 });
 
-app.delete('/api/cars/:id', (req, res) => {
+app.delete('/api/cars/:id', verifyToken, verifyAdmin, (req, res) => {
     db.query('DELETE FROM autok WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).json(err);
         res.json({ message: 'Sikeres törlés' });
     });
 });
-
 
 // ─── Indítás ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
