@@ -180,8 +180,9 @@ app.post('/api/users/login', (req, res) => {
     });
 });
 
+// ✅ JAVÍTOTT: Logout - COOKIE_OPTS-al törlés
 app.post('/api/users/logout', verifyToken, (req, res) => {
-    res.clearCookie(COOKIE_NAME, { path: '/' });
+    res.clearCookie(COOKIE_NAME, COOKIE_OPTS);
     res.status(200).json({ success: true, message: 'Sikeres kijelentkezés!' });
 });
 
